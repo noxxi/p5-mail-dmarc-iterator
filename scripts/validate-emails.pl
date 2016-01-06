@@ -30,6 +30,7 @@ Options:
    --spf-srcip S   source IP address of sender
    --spf-helo N    name from helo/ehlo in SMTP dialog
    --spf-received  try to use Received-SPF header in mail
+   --spf-sp2dinfo  try to use X-SP2D-INFO header in mail
 
    --dns-first     if DNS lookups and more data from mail are needed to proceed
                    first do the DNS lookups 
@@ -45,6 +46,7 @@ GetOptions(
     'spf-srcip=s'  => \$spf{ip},
     'spf-helo=s'   => \$spf{helo},
     'spf-received' => \$spf{received},
+    'spf-sp2dinfo' => \$spf{sp2dinfo},
     'dnsfirst'     => \$dnsfirst,
     'h|help'       => sub {usage()},
     'd|debug'      => \$DEBUG,
@@ -62,18 +64,39 @@ while ( my $mail = $mbox->nextmail ) {
     $id = $mail->{file};
     $id .= '#'.$mail->{idx} if $mail->{idx};
 
-    my $buf = $mbox->nextdata;
-    $buf eq '' and next;
-    my $subj = $buf =~m{^Subject:[ \t]*(.*\n(?:[ \t].*\n)*)}mi 
+    my $buf = '';
+    my $hdr;
+    while (!defined $hdr) {
+	my $lbuf = $mbox->nextdata;
+	$lbuf eq '' and last;
+	$buf .= $lbuf;
+	$hdr = substr($buf,0,pos($buf)) if $buf =~m{\n\r?\n}g;
+    };
+
+    # X-SP2D-INFO: ...; from=<...>; helo=EHLO:...; ... srcip=...
+    my %spf_args = %spf;
+    if ($spf_args{sp2dinfo} and $hdr =~m{^X-SP2D-INFO:\s*(.*)}m) {
+	# extract info from mail header X-SP2D-INFO
+	my $v = $1;
+	%spf_args = ();
+	$spf_args{mailfrom} = $1 if $v =~s{\bfrom=<([^>]*)>;?}{};
+	$spf_args{helo} = $1 if $v =~s{\bhelo=(?:EHLO|HELO):([^\s;]+)}{};
+	$spf_args{ip} = lc($1||$2) if $v =~s{\bsrcip=(?:::ffff:([\d\.]+)|([\da-f\.:]+));?}{}i;
+    } elsif ($spf_args{received}) {
+	# keep given SPF args
+	# extract result Received-SPF
+	%spf_args = (spf_result => undef);
+    } elsif (%spf_args) {
+	# keep
+    }
+
+    my $subj = $hdr =~m{^Subject:[ \t]*(.*\n(?:[ \t].*\n)*)}mi 
 	? $1:'NO SUBJECT';
     $subj =~s{[\r\n]+}{}g;
     print STDERR "\n--- $subj | $id\n";
 
     $dmarc = Mail::DMARC::Iterator->new(
-	$spf{received} ? ( 
-	    # extract from Received-SPF
-	    spf_result => undef 
-	): %spf,
+	%spf_args,
 	dnscache => \%globdns,
     );
 

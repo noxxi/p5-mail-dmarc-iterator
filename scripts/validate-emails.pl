@@ -101,7 +101,7 @@ while ( my $mail = $mbox->nextmail ) {
     printf STDERR "%s from-domain=%s; reason=%s; action=%s\n", 
 	$result||'<undef>', 
 	$dmarc->domain || 'unknown',
-	$todo[0],
+	$todo[0] || 'unkown',
 	$todo[1] || 'no action';
 }
 

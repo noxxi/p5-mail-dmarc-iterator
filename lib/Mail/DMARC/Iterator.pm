@@ -296,6 +296,7 @@ sub next {
 	    # no more todos from DKIM - remove DKIM object and keep result
 	    $DEBUG && debug("DKIM done (no more todos)");
 	    delete $self->{dkim};
+	    goto recalc;
 	} else {
 	    # Parse todos in dkim_result and translate them to local todos.
 	    # Todo in dkim_result is either \'' for more data or the DNS
@@ -325,6 +326,7 @@ sub next {
 	    # no more todos - remove SPF object and keep result
 	    $DEBUG && debug("SPF is final - $self->{spf_result}[0]");
 	    delete $self->{spf};
+	    goto recalc;
 	} else {
 	    for(my $i=1;1;$i++) {
 		# Todos in spf_result are Net::DNS objects.

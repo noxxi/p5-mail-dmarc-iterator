@@ -850,9 +850,9 @@ sub _inspect_header {
 
 __END__
 
-=head1 NAME Mail::DMARC::Iterator
+=head1 NAME
 
-Iterativ DMARC validation for mails.
+Mail::DMARC::Iterator - Iterativ DMARC validation for mails.
 
 =head1 SYNOPSIS
 

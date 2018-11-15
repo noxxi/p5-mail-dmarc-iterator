@@ -5,3 +5,4 @@ Changes
 README
 scripts/validate-emails.pl
 t/00-load.t
+t/01-basic.t

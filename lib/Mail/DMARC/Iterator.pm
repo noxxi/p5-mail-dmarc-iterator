@@ -1,13 +1,13 @@
 package Mail::DMARC::Iterator;
 use strict;
 use warnings;
-use Mail::DKIM::Iterator 0.013;
-use Mail::SPF::Iterator 1.112 qw(:DEFAULT $DEBUG);
+use Mail::DKIM::Iterator 1.002;
+use Mail::SPF::Iterator 1.115 qw(:DEFAULT $DEBUG);
 use Net::DNS;
 use Scalar::Util 'dualvar';
 use Exporter;
 
-our $VERSION = '0.010';
+our $VERSION = '0.011';
 
 # TODO
 # provide some way to get reports (rua)
@@ -68,13 +68,16 @@ sub new {
 	_from => undef,        # list of sender domains during collection in header
 	_dmarc_domain => undef, # list of domains to check for DMARC record
 
-	dkim => undef,         # DKIM object
+	dkim => undef,         # internal DKIM object
+	dkim_sub => undef,     # external function which computes dkim_result
 	dkim_result  => undef, # result from DKIM
 
 	spf => undef,          # SPF object
 	spf_result  => undef,  # result from SPF
 
 	dnscache => undef,     # external DNS cache
+	_dnsq => {},           # local mapping to DNS packet for open queries
+	authentication_results => [],
     },$class;
 
     if ($args{spf_result}) {
@@ -91,7 +94,10 @@ sub new {
     }
 
     if ($args{dkim_result}) {
-	$self->{dkim_result} = delete $args{dkim_result};
+	$self->{dkim_result}[0] = delete $args{dkim_result};
+    } elsif ($args{dkim_sub}) {
+	$self->{dkim_sub} = delete $args{dkim_sub};
+	$self->{dkim_result}[0] = $self->{dkim_sub}();
     } else {
 	$self->{dkim} = Mail::DKIM::Iterator->new;
 	$self->{dkim_result} = [ $self->{dkim}->next ];
@@ -108,7 +114,8 @@ sub new {
 
 # input
 # - (string): data from mail
-# - (ref):    DNS packet with answer for DKIM or SPF
+# - (Net::DNS::Packet): DNS packet with answer for DKIM or SPF
+# - ([Net::DNS::Packet, error]): DNS query where lookup failed
 # - ():       just recompute final result
 # output:
 # - ($rv,@todo) with $rv the (preliminary) results and @todo the list of things
@@ -151,8 +158,9 @@ sub next {
 	$DEBUG && debug("got DNS response to ".($data->question)[0]->string);
     }
 
-    my $qid = join(':', ($data->question)[0]->qtype, 
-	($data->question)[0]->qname, $data->header->id);
+    my $dq = ($data->question)[0];
+    my $cachekey = $dq->qtype.':'.$dq->qname;
+    my $qid = $cachekey.':'.$data->header->id;
     my $cb = $self->{cb}{$qid};
     if (!$cb) {
 	# undefined -> unexpected response: complain
@@ -162,11 +170,8 @@ sub next {
 	goto process_input;
     };
 
-    if ($self->{dnscache}) {
-	$self->{dnscache}
-	    ->{ ($data->question)[0]->qtype.':'.($data->question)[0]->qname }
-	    = $data;
-    }
+    delete $self->{_dnsq}{$cachekey};
+    $self->{dnscache}{$cachekey} = $data if $self->{dnscache};
 
     ($cb,my @arg) = @$cb;
     $cb->($self,$data,$error,@arg);
@@ -184,8 +189,18 @@ sub next {
     my $rec = $self->{record} or goto compute_todos;
 
     my $dkim_result;
+    if ($self->{dkim_sub} and
+	my $r = $self->{dkim_result}[0] = $self->{dkim_sub}()) {
+	@$r = grep { $_->sig->{d} =~ $self->{domrx} } @$r if $self->{domrx};
+    }
     if ($self->{dkim_result}) {
-	for( @{ $self->{dkim_result}[0] } ) {
+	if ($self->{dkim} and !$self->{dkim_result}[1]) {
+	    push @{$self->{authentication_results}}, $_->authentication_results
+		for @{ $self->{dkim_result}[0] || []};
+	    $DEBUG && debug("internal dkim done");
+	    delete $self->{dkim};
+	}
+	for(@{ $self->{dkim_result}[0] || [] }) {
 	    $DEBUG && debug("got identifier aligned DKIM record, status=%s",
 		$_->status // '<undef>');
 	    my $st = $_->status // next;
@@ -259,6 +274,13 @@ sub next {
 		$best = $_
 	    }
 	}
+	if ($self->{dkim_sub} and
+	    !$best || $best->[0] != DMARC_PASS and
+	    ! $self->{dkim_result}[0] || grep { !$_->status } @{$self->{dkim_result}[0]}) {
+	    $DEBUG && debug("wating with final result for DKIM to complete");
+	    return (undef);
+	}
+	warn Dumper([$self->{dkim_sub},$self->{dkim_result}[0]]); use Data::Dumper;
 	$self->{result} = $best || 
 	    [ DMARC_FAIL, "neither DKIM nor SPF information" ];
 	goto return_result;
@@ -279,7 +301,8 @@ sub next {
 	# Ask for the DMARC TXT record
 	$DEBUG && debug("need DMARC record for @$dom");
 	push @need_dns, [
-	    Net::DNS::Packet->new('_dmarc.'.$dom->[0],'TXT'),
+	    $self->{_dnsq}{"TXT:_dmarc.$dom->[0]"}
+		||= Net::DNS::Packet->new('_dmarc.'.$dom->[0],'TXT'),
 	    \&_got_dmarc_record,
 	    $dom
 	];
@@ -295,7 +318,6 @@ sub next {
 	if (!$self->{dkim_result}[1]) {
 	    # no more todos from DKIM - remove DKIM object and keep result
 	    $DEBUG && debug("DKIM done (no more todos)");
-	    delete $self->{dkim};
 	    goto recalc;
 	} else {
 	    # Parse todos in dkim_result and translate them to local todos.
@@ -309,7 +331,8 @@ sub next {
 		} else {
 		    $DEBUG && debug("DKIM needs TXT record for $todo");
 		    push @need_dns, [
-			Net::DNS::Packet->new($todo,'TXT'),
+			$self->{_dnsq}{"TXT:$todo"}
+			    ||= Net::DNS::Packet->new($todo,'TXT'),
 			\&_feed_dkim,
 			$todo
 		    ];
@@ -323,8 +346,12 @@ sub next {
 	# result yet. Check the first element of the result to see if the result
 	# is final (defined) or we still have something to do.
 	if ($self->{spf_result}[0]) {
+	    my $sr = $self->{spf_result};
 	    # no more todos - remove SPF object and keep result
-	    $DEBUG && debug("SPF is final - $self->{spf_result}[0]");
+	    $DEBUG && debug("SPF is final - $sr->[0]");
+	    push @{$self->{authentication_results}}, "spf=$sr->[0] " .
+		($sr->[2] && $sr->[2]{problem} && " ($sr->[2]{problem})" || "") .
+		" smtp.mailfrom=$self->{spf}{sender}";
 	    delete $self->{spf};
 	    goto recalc;
 	} else {
@@ -361,6 +388,8 @@ sub next {
 	    unshift @input,$cached;
 	} else {
 	    push @todo,$pkt;
+	    $DEBUG && debug("NEW TODO qid=".join(':',
+		$q->qtype, $q->qname, $pkt->header->id)." q=".$pkt->string);
 	}
     }
     goto process_input if @input; # process results from cache
@@ -394,6 +423,14 @@ sub next {
     }
     $DEBUG && debug("final result: @{$self->{result}}");
     return @{$self->{result}};
+}
+
+sub authentication_results {
+    my $self = shift;
+    $self->{result} or return;
+    return "dmarc=$self->{result}[0] header.from=" . $self->domain
+	. " reason=\"$self->{result}[1]\"",
+	@{$self->{authentication_results}};
 }
 
 
@@ -462,10 +499,12 @@ sub _got_dmarc_record {
 	# strict mode - must match domain of from
 	$domrx = qr{^\Q$self->{domain}[0]\E\z};
     }
-    $self->{dkim}->filter(sub { shift->{d} =~ $domrx })
-	if $self->{dkim};
-    if ($self->{dkim_result}) {
-	@{ $self->{dkim_result}[0] } = grep { $_->sig->{d } =~ $domrx }
+    $self->{domrx} = $domrx;
+    if ($self->{dkim}) {
+	$self->{dkim}->filter(sub { shift->{d} =~ $domrx });
+	$self->{dkim_result} = [ $self->{dkim}->next ];
+    } elsif ($self->{dkim_result}) {
+	@{ $self->{dkim_result}[0] } = grep { $_->sig->{d} =~ $domrx }
 	    @{ $self->{dkim_result}[0] };
     }
 
@@ -913,6 +952,20 @@ it will try to find C<Received-SPF> records inside the mail extract the SPF
 result from them. These records must have an C<envelope-from> parameter which
 will be used for identity aligning as described in the DMARC specification.
 
+=item dkim_result => DKIM_RESULT
+
+If given this is the result of an externally done DKIM computation. It is
+expected to be in the same format as the result returned by
+L<Mail::DKIM::Iterator>.
+
+=item dkim_sub => function
+
+If given this is a function which computes the current DKIM result whenever it
+is needed (i.e. within calls of C<next>). This is used of DKIM processing is
+done in parallel to DMARC processing so that the result can change.
+The function is expected to return the DKIM_RESULT in the same format as the
+result returned by L<Mail::DKIM::Iterator>.
+
 =item dnscache => \%hash
 
 Optional cache for DNS lookups which can be shared between multiple instances
@@ -920,6 +973,10 @@ of L<Mail::DMARC::Iterator>. Before reporting DNS lookups as needed to the
 user of the object it will first try to resolve the lookups using the cache.
 
 =back
+
+If neither C<dkim_sub> nor C<dkim_result> are given it will create an internal
+L<Mail::DKIM::Iterator> object and feed the data into it as long as it is
+needed, i.e. as long as now final DMARC result is known.
 
 =item $self->domain -> $domain
 
@@ -936,7 +993,8 @@ This is the central method to compute the result.
 If the final result is known it will return the C<$result> including the
 C<$reason> for this result and any C<$action> which must be taken based on the
 policy. C<$result> will be pass, fail, ... as described below. In case of fail
-C<$action> will return the policy action, i.e. reject, quarantine or none.
+C<$action> will return the policy action in case of C<fail>, i.e. reject,
+quarantine or none.
 
 If the final result is not known yet it will return a list of todo's, where each
 of these is either the scalar C<'D'> or a DNS query in form of a
@@ -948,6 +1006,12 @@ The results of these todo's are given as arguments to C<next>, i.e. either data
 from the mail as string or a L<Net::DNS::Packet> as the answer. In case the DNS
 lookup failed it should add an array reference C<[ dnspkt, error ]> consisting
 of the original DNS query packet and a string description of the error.
+
+=item $self->authentication_results => @lines
+
+Generates lines which can be used in the Authentiation-Results header.
+With builtin DKIM and SPF handling this will include the results from these
+too.
 
 =back
 
@@ -997,7 +1061,7 @@ Steffen Ullrich <sullr[at]cpan[dot]org>
 
 =head1 COPYRIGHT
 
-Steffen Ullrich, 2015
+Steffen Ullrich, 2015..2018
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

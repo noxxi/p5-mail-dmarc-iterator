@@ -15,8 +15,8 @@ WriteMakefile(
         },
     },
     PREREQ_PM => {
-        'Mail::SPF::Iterator' => 1.112,
-        'Mail::DKIM::Iterator' => 0.013,
+        'Mail::SPF::Iterator' => 1.115,
+        'Mail::DKIM::Iterator' => 1.002,
     },
     VERSION_FROM => 'lib/Mail/DMARC/Iterator.pm',
 );

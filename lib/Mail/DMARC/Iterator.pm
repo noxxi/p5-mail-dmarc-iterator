@@ -7,7 +7,7 @@ use Net::DNS;
 use Scalar::Util 'dualvar';
 use Exporter;
 
-our $VERSION = '0.011';
+our $VERSION = '0.012';
 
 # TODO
 # provide some way to get reports (rua)
@@ -228,6 +228,7 @@ sub next {
 	# check if envelope-from of SPF-Record matches from
 	my $from = $sr->[2]{'envelope-from'} || $sr->[2]{helo} || last;
 	$from =~s{.*\@}{};
+	$from =~s{>.*}{};
 	if ( $rec->{aspf} eq 's' 
 	    ? lc($from) ne $rec->{domain}
 	    : $from !~m{^([\w\-\.]+\.)?\Q$rec->{domain}\E}i) {
@@ -249,10 +250,10 @@ sub next {
 	}
 
 	$spf_result = 
-	    $sr->[0] eq SPF_Fail      ? [ DMARC_FAIL, $sr->[3] ] :
-	    $sr->[0] eq SPF_SoftFail  ? [ DMARC_FAIL, $sr->[3] ] :
-	    $sr->[0] eq SPF_PermError ? [ DMARC_PERMERROR, $sr->[3] ] :
-	    $sr->[0] eq SPF_TempError ? [ DMARC_TEMPERROR, $sr->[3] ] :
+	    $sr->[0] eq SPF_Fail      ? [ DMARC_FAIL, $sr->[3] // 'SPF Fail' ] :
+	    $sr->[0] eq SPF_SoftFail  ? [ DMARC_FAIL, $sr->[3] // 'SPF SoftFail' ] :
+	    $sr->[0] eq SPF_PermError ? [ DMARC_PERMERROR, $sr->[3] // 'SPF PermError' ] :
+	    $sr->[0] eq SPF_TempError ? [ DMARC_TEMPERROR, $sr->[3] // 'SPF TempError' ] :
 	    [ DMARC_NONE, "SPF result neutral or none" ];
     }
 
@@ -421,7 +422,7 @@ sub next {
 	    $self->{result}[2] = '';
 	}
     }
-    $DEBUG && debug("final result: @{$self->{result}}");
+    $DEBUG && do { no warnings; debug("final result: @{$self->{result}}"); };
     return @{$self->{result}};
 }
 
@@ -429,7 +430,7 @@ sub authentication_results {
     my $self = shift;
     $self->{result} or return;
     return "dmarc=$self->{result}[0] header.from=" . $self->domain
-	. " reason=\"$self->{result}[1]\"",
+	. ' reason="'.($self->{result}[1] // '').'"',
 	@{$self->{authentication_results}};
 }
 
@@ -520,6 +521,7 @@ sub _got_dmarc_record {
 	for(@{ $self->{spf_result}[0] }) {
 	    my $from = $_->[1]{'envelope-from'} or next;
 	    $from =~s{.*\@}{}s;
+	    $from =~s{>.*}{}s;
 	    $from =~ $domrx or next;
 	    push @aligned, $_
 	}

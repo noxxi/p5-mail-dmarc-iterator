@@ -126,6 +126,8 @@ while ( my $mail = $mbox->nextmail ) {
 	$dmarc->domain || 'unknown',
 	$todo[0] || 'unkown',
 	$todo[1] || 'no action';
+    print "Authentication-Results: hostname;\n ".
+	join(";\n ", $dmarc->authentication_results)."\n";
 }
 
 

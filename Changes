@@ -1,3 +1,6 @@
+0.012 - 2018-11-14
+- better reporting of reason for result
+- better handling of Received-SPF
 0.011 - 2018-11-14
 - dkim_sub argument for new for external DKIM handling
 - next() creates exactly the same DNS packets for not yet handled tasks

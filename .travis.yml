@@ -1,3 +1,6 @@
+branches:
+  except:
+    - gh-pages
 language: perl
 perl:
   - "5.26"

@@ -281,7 +281,7 @@ sub next {
 	    $DEBUG && debug("wating with final result for DKIM to complete");
 	    return (undef);
 	}
-	warn Dumper([$self->{dkim_sub},$self->{dkim_result}[0]]); use Data::Dumper;
+	#warn Dumper([$self->{dkim_sub},$self->{dkim_result}[0]]); use Data::Dumper;
 	$self->{result} = $best || 
 	    [ DMARC_FAIL, "neither DKIM nor SPF information" ];
 	goto return_result;
@@ -824,17 +824,17 @@ sub _inspect_header {
     # calculate the public suffix.
     if (eval { require IO::Socket::SSL::PublicSuffix }) {
 	my $ps = IO::Socket::SSL::PublicSuffix->default;
-	*organizational_domain = sub {
+	*organizational_domain = sub($) {
 	    return $ps->public_suffix($_[0],1) || $_[0];
 	};
     } elsif (eval { require Domain::PublicSuffix }) {
 	my $ps = Domain::PublicSuffix->new;
-	*organizational_domain = sub {
+	*organizational_domain = sub($) {
 	    return $ps->get_root_domain($_[0]) || $_[0];
 	};
 
     } elsif (eval { require Mozilla::PublicSuffix }) {
-	*organizational_domain = sub {
+	*organizational_domain = sub($) {
 	    my $domain = shift;
 	    if (my $suffix = Mozilla::PublicSuffix::public_suffix($domain)) {
 		return $1 if $domain =~m{([^\.]+\.\Q$suffix\E$)}i;

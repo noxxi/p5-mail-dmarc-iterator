@@ -52,7 +52,7 @@ sub import {
 
 
 # defined at the end, based on the public suffix module we have installed
-sub organizational_domain($);
+sub organizational_domain;
 
 sub new {
     my ($class,%args) = @_;

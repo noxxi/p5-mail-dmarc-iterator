@@ -7,7 +7,7 @@ use Net::DNS;
 use Scalar::Util 'dualvar';
 use Exporter;
 
-our $VERSION = '0.013';
+our $VERSION = '0.014';
 
 # TODO
 # provide some way to get reports (rua)
